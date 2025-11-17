@@ -3,6 +3,8 @@ import StatCard from "./components/StatCard.jsx";
 import Gauge from "./components/Gauge.jsx";
 import Compass from "./components/Compass.jsx";
 import SolarDial from "./components/SolarDial.jsx";
+import Chart from "./components/Chart.jsx";
+import DownloadButton from "./components/DownloadButton.jsx";
 
 const API_BASE = import.meta.env.VITE_BACKEND_URL || "";
 
@@ -35,10 +37,54 @@ function useTelemetry() {
   return { data, error };
 }
 
+function useHistory(intervalMs = 5000, windowSize = 60) {
+  const [points, setPoints] = useState([]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function tick() {
+      try {
+        const res = await fetch(`${API_BASE}/api/telemetry`);
+        const json = await res.json();
+        if (!mounted) return;
+        setPoints((prev) => {
+          const next = [
+            ...prev,
+            {
+              t: Date.now(),
+              ambient: json.environment?.ambient_temp_c ?? 0,
+              surface: json.environment?.surface_temp_c ?? 0,
+              uv: json.environment?.uv_index ?? 0,
+              light: json.environment?.light_lux ?? 0,
+              batt: json.power?.battery_pct ?? 0,
+              speed: json.navigation?.speed_mps ?? 0,
+            },
+          ];
+          return next.slice(-windowSize);
+        });
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    tick();
+    const id = setInterval(tick, intervalMs);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, [intervalMs, windowSize]);
+
+  return points;
+}
+
 function App() {
   const { data, error } = useTelemetry();
   const camo = data?.camouflage?.color_hsl || "hsl(200,70%,55%)";
   const danger = data?.danger_level || "low";
+
+  const points = useHistory(3000, 50);
 
   const dangerColor = useMemo(() => {
     switch (danger) {
@@ -53,9 +99,13 @@ function App() {
 
   return (
     <div className={`min-h-screen bg-gradient-to-br ${dangerColor}`}>
-      <div className="absolute inset-0 pointer-events-none" style={{
-        background: `radial-gradient(circle at 20% 10%, rgba(59,130,246,0.08), transparent 40%), radial-gradient(circle at 80% 20%, rgba(16,185,129,0.08), transparent 40%)`
-      }} />
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            "radial-gradient(circle at 20% 10%, rgba(59,130,246,0.08), transparent 40%), radial-gradient(circle at 80% 20%, rgba(16,185,129,0.08), transparent 40%)",
+        }}
+      />
 
       <div className="relative mx-auto max-w-6xl px-6 py-10">
         <header className="flex items-center justify-between mb-8">
@@ -66,8 +116,28 @@ function App() {
               <p className="text-slate-300 text-sm">Bio-Rover TOFY-X1 • real-time telemetry</p>
             </div>
           </div>
-          <div className="text-slate-300 text-xs">
-            {data?.timestamp ? new Date(data.timestamp).toLocaleTimeString() : "—"}
+          <div className="flex items-center gap-3">
+            <a
+              className="bg-sky-600 hover:bg-sky-500 text-white text-sm px-3 py-2 rounded-lg"
+              href={`${API_BASE}/api/session/start`}
+              onClick={(e) => {
+                e.preventDefault();
+                fetch(`${API_BASE}/api/session/start`, { method: "POST" });
+              }}
+            >
+              Start recording
+            </a>
+            <a
+              className="bg-slate-700 hover:bg-slate-600 text-white text-sm px-3 py-2 rounded-lg"
+              href={`${API_BASE}/api/session/stop`}
+              onClick={(e) => {
+                e.preventDefault();
+                fetch(`${API_BASE}/api/session/stop`, { method: "POST" });
+              }}
+            >
+              Stop
+            </a>
+            <DownloadButton href={`${API_BASE}/api/export/csv`} label="Export CSV" />
           </div>
         </header>
 
@@ -95,7 +165,10 @@ function App() {
               <div className="text-slate-400 text-xs">{data?.power?.battery_voltage ?? "—"} V</div>
             </div>
             <div className="flex items-center justify-center">
-              <Gauge percent={data?.power?.battery_pct ?? 0} color={data?.power?.battery_pct < 30 ? "#f43f5e" : data?.power?.battery_pct < 60 ? "#f59e0b" : "#22c55e"} />
+              <Gauge
+                percent={data?.power?.battery_pct ?? 0}
+                color={data?.power?.battery_pct < 30 ? "#f43f5e" : data?.power?.battery_pct < 60 ? "#f59e0b" : "#22c55e"}
+              />
             </div>
           </div>
 
@@ -103,6 +176,24 @@ function App() {
 
           <div className="bg-slate-800/70 border border-slate-700 rounded-xl p-4 flex items-center justify-center">
             <Compass heading={data?.navigation?.heading ?? 0} />
+          </div>
+        </div>
+
+        {/* Charts */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+          <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+            <Chart label="Ambient °C" color="#60a5fa" data={points.map((p) => p.ambient)} minY={-10} maxY={60} />
+            <div className="mt-4"><Chart label="Surface °C" color="#f87171" data={points.map((p) => p.surface)} minY={-10} maxY={80} /></div>
+          </div>
+          <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+            <Chart label="UV Index" color="#f59e0b" data={points.map((p) => p.uv)} minY={0} maxY={12} />
+            <div className="mt-4"><Chart label="Light (lux)" color="#a3e635" data={points.map((p) => p.light)} minY={0} /></div>
+          </div>
+          <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+            <Chart label="Battery %" color="#22c55e" data={points.map((p) => p.batt)} minY={0} maxY={100} />
+          </div>
+          <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+            <Chart label="Speed (m/s)" color="#06b6d4" data={points.map((p) => p.speed)} minY={0} maxY={3} />
           </div>
         </div>
 
@@ -118,7 +209,14 @@ function App() {
           <div className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden">
             <div className="p-3 text-slate-300 text-xs uppercase">Camera</div>
             <div className="aspect-video bg-black/40">
-              <img src={data?.image?.url || `${API_BASE}/api/image`.replace(/\/$/, "")} alt="Rover view" className="w-full h-full object-cover" onError={(e) => { e.target.style.opacity = 0.2; }} />
+              <img
+                src={data?.image?.url || `${API_BASE}/api/image`.replace(/\/$/, "")}
+                alt="Rover view"
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  e.target.style.opacity = 0.2;
+                }}
+              />
             </div>
           </div>
 
